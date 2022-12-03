@@ -1,0 +1,231 @@
+-- Suppression des tables...
+
+DROP TABLE Location  CASCADE CONSTRAINTS;
+DROP TABLE Vehicule  CASCADE CONSTRAINTS;
+DROP TABLE Modeles   CASCADE CONSTRAINTS;
+DROP TABLE Tarif     CASCADE CONSTRAINTS;
+DROP TABLE Formules  CASCADE CONSTRAINTS;
+DROP TABLE Types     CASCADE CONSTRAINTS;
+
+
+-- Suppression des sequences...
+
+DROP SEQUENCE seqVehicule;
+
+
+-- Suppression des fonctions...
+
+DROP PROCEDURE AjouterVehicule;
+DROP FUNCTION VehiculesDisponibles;
+DROP FUNCTION ChiffreAffaires;
+
+
+-- Creation des tables...
+
+CREATE TABLE Types (
+	IdType NUMBER(5) CHECK(IdType >= 0) PRIMARY KEY,
+	Type VARCHAR2(20) NOT NULL
+);
+
+CREATE TABLE Formules (
+	Formule VARCHAR2(15) NOT NULL PRIMARY KEY,
+	NbJours NUMBER(3) CHECK(NbJours >= 0),
+	KmMax NUMBER(5) CHECK(KmMax >= 0)
+);
+
+CREATE TABLE Tarif (
+	IdType NUMBER(5) REFERENCES Types(IdType),
+	Formule VARCHAR2(15) REFERENCES Formules(Formule),
+	Prix NUMBER(5) CHECK(Prix >= 0),
+	PrixKmSupp NUMBER(3,2) CHECK(PrixKmSupp >= 0),
+	PRIMARY KEY(IdType, Formule)
+);
+
+CREATE TABLE Modeles (
+	Modele VARCHAR2(20) NOT NULL PRIMARY KEY,
+	Marque VARCHAR2(20) NOT NULL,
+	IdType NUMBER(5) REFERENCES Types(IdType)
+);
+
+CREATE TABLE Vehicule (
+	NumVehicule NUMBER(5) CHECK(NumVehicule > 0) PRIMARY KEY,
+	Modele VARCHAR2(20) NOT NULL REFERENCES Modeles(Modele),
+	Matricule CHAR(15) NOT NULL,
+	DateMatricule DATE NOT NULL,
+	Kilometrage NUMBER(7) CHECK(Kilometrage >= 0),
+	Situation VARCHAR2(20) DEFAULT 'disponible',
+	UNIQUE (Matricule)
+);
+
+CREATE TABLE Location (
+	NumLocation NUMBER(7) CHECK(NumLocation >= 0) PRIMARY KEY,
+	NumVehicule NUMBER(5) REFERENCES Vehicule(NumVehicule),
+	Formule VARCHAR2(15) NOT NULL REFERENCES Formules(Formule),
+	DateDepart DATE NOT NULL,
+	DateRetour DATE NOT NULL,
+	NbKm NUMBER(5) CHECK(NbKm >= 0),
+	Montant NUMBER(5) CHECK(Montant >= 0)
+);
+
+
+-- Creation des sequences...
+
+CREATE SEQUENCE seqVehicule START WITH 1 INCREMENT BY 1;
+
+
+-- Creation des fonctions...
+
+CREATE OR REPLACE PROCEDURE AjouterVehicule (Model IN VARCHAR2, Mat IN CHAR, DateMat IN DATE, Km IN NUMBER)
+IS
+  v_mod Modeles.Modele%TYPE;
+  v_mat Vehicule.Matricule%TYPE;
+BEGIN
+  -- check if all the parameters are valid
+  IF (Model IS NULL) OR (Mat IS NULL) OR (DateMat IS NULL) OR (Km IS NULL) THEN
+    RAISE_APPLICATION_ERROR(-20001,'une ou plusieurs donnees saisies sont null');
+  END IF;
+
+  -- check if the modele exist in Modeles
+  SELECT COUNT(Modele) INTO v_mod FROM Modeles WHERE Modele=Model;
+  IF (v_mod=0) THEN
+    RAISE_APPLICATION_ERROR(-20002,'le modele saisie n existe pas');
+  END IF;
+
+  -- check if the kilometrage is >= 0
+  IF (Km<0) THEN
+    RAISE_APPLICATION_ERROR(-20003,'le kilometrage saisie est negatif');
+  END IF;
+
+  -- check if the matricule already exist in Vehicule
+  SELECT COUNT(Matricule) INTO v_mat FROM Vehicule WHERE Matricule=Mat;
+  IF (v_mat!=0) THEN
+    UPDATE Vehicule SET Modele=Model, DateMatricule=DateMat, Kilometrage=Km WHERE Matricule=Mat;
+    DBMS_OUTPUT.PUT_LINE('le vehicule de matricule '||TO_CHAR(Mat)||' a ete modifie');
+  ELSE -- add the vehicule
+    INSERT INTO Vehicule (NumVehicule, Modele, Matricule, DateMatricule, Kilometrage, Situation)
+    VALUES (seqVehicule.NEXTVAL, Model, Mat, DateMat, Km, 'disponible');
+    DBMS_OUTPUT.PUT_LINE('le vehicule de matricule '||TO_CHAR(Mat)||' a ete ajoute');
+  END IF;
+
+  COMMIT;
+
+	EXCEPTION
+	WHEN OTHERS THEN
+		DBMS_OUTPUT.PUT_LINE('Erreur Oracle : '||sqlcode||' ; Message Oracle : '||sqlerrm);
+END;
+/
+
+
+CREATE OR REPLACE PROCEDURE VehiculesDisponibles (Typ IN VARCHAR2)
+IS
+	v_typ Types.Type%TYPE;
+BEGIN
+	-- check if the type is not null
+	IF (Typ IS NULL) THEN
+		RAISE_APPLICATION_ERROR(-20001,'le type saisie est null');
+	END IF;
+
+  -- check if the type exist in Types
+  SELECT COUNT(Type) INTO v_typ FROM Types WHERE Type=Typ;
+  IF (v_typ=0) THEN
+    RAISE_APPLICATION_ERROR(-20002,'le type saisie n existe pas');
+  END IF;
+
+  -- check if the type is 'disponible'
+  SELECT COUNT(Type) INTO v_typ FROM Types t
+  WHERE EXISTS (SELECT Situation FROM Vehicule v, Modeles m WHERE t.Type=Typ AND t.IdType=m.IdType AND m.Modele=v.Modele AND v.Situation='disponible');
+  IF (v_typ=0) THEN
+    RAISE_APPLICATION_ERROR(-20003,'le type saisie n est pas disponible');
+  END IF;
+
+  -- print the Vehicule with Situation = 'disponible'
+  DECLARE
+    CURSOR list IS SELECT * FROM Vehicule v WHERE Situation='disponible' ORDER BY (SELECT m.Marque FROM Modeles m WHERE m.Modele=v.Modele), Modele;
+    v_num Vehicule.NumVehicule%TYPE;
+    v_mod Vehicule.Modele%TYPE;
+    v_mat Vehicule.Matricule%TYPE;
+    v_dat Vehicule.DateMatricule%TYPE;
+    v_kil Vehicule.Kilometrage%TYPE;
+    v_sit Vehicule.Situation%TYPE;
+
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE(RPAD('NumVehicule',14,' ')||RPAD('Modele',14,' ')||RPAD('Matricule',14,' ')||RPAD('DateMatricule',14,' ')||RPAD('Kilometrage',14,' ')||'Situation') ;
+        DBMS_OUTPUT.PUT_LINE(RPAD('-',80,'-'));
+        OPEN list;
+        FETCH list INTO v_num, v_mod, v_mat, v_dat, v_kil, v_sit;
+        IF list%FOUND THEN
+            LOOP
+                IF list%FOUND THEN -- the list is not empty
+                    DBMS_OUTPUT.PUT_LINE(RPAD(v_num,14,' ')||RPAD(v_mod,14,' ')||RPAD(v_mat,14,' ')||RPAD(v_dat,14,' ')||RPAD(v_kil,14,' ')||RPAD(v_sit,14,' '));
+                    FETCH list INTO v_num, v_mod, v_mat, v_dat, v_kil, v_sit;
+                ELSE -- end of the list
+                    EXIT;
+                END IF;
+            END LOOP;
+        ELSE -- the list is empty
+            DBMS_OUTPUT.PUT_LINE('Pas de vehicule disponible dans le type demande');
+        END IF;
+
+    END;
+
+	EXCEPTION
+	WHEN OTHERS THEN
+		DBMS_OUTPUT.PUT_LINE('Erreur Oracle : '||sqlcode||' ; Message Oracle : '||sqlerrm);
+END;
+/
+
+
+CREATE OR REPLACE FUNCTION ChiffreAffaires (Formul IN VARCHAR2, Typ IN VARCHAR2)
+RETURN NUMBER
+IS
+  v_fml Formules.Formule%TYPE;
+  v_typ Types.Type%TYPE;
+	total NUMBER;
+BEGIN
+  -- check if the formule exist in Formules
+  SELECT COUNT(Formule) INTO v_fml FROM Formules WHERE Formule=Formul;
+  IF (v_fml=0 AND Formul IS NOT NULL) THEN
+    RAISE_APPLICATION_ERROR(-20001,'la formule saisie n existe pas');
+    RETURN -1;
+  END IF;
+
+  -- check if the type exist in Types
+  SELECT COUNT(Type) INTO v_typ FROM Types WHERE Type=Typ;
+  IF (v_typ=0 AND Typ IS NOT NULL) THEN
+    RAISE_APPLICATION_ERROR(-20002,'le type saisie n existe pas');
+    RETURN -2;
+  END IF;
+
+  IF Formul IS NULL AND Typ IS NULL THEN -- formule and type null
+    SELECT SUM(Montant) INTO total FROM Location;
+  ELSIF Typ IS NULL THEN -- formule is not null
+    SELECT SUM(l.Montant) INTO total FROM Location l WHERE Formul=l.Formule;
+  ELSIF Formul IS NULL THEN -- type is not null
+    SELECT SUM(l.Montant) INTO total FROM Location l, Vehicule v, Modeles m, Types t
+    WHERE (l.NumVehicule=v.NumVehicule
+        AND v.Modele = m.Modele
+        AND m.IdType=t.IdType
+        AND t.Type=Typ);
+  ELSE -- formule and typ not null
+    SELECT SUM(l.Montant) INTO total FROM Location l, Vehicule v, Modeles m, Types t
+    WHERE (l.NumVehicule=v.NumVehicule
+        AND v.Modele = m.Modele
+        AND m.IdType=t.IdType
+        AND t.Type=Typ
+        AND l.Formule=Formul);
+  END IF;
+
+	RETURN total;
+
+	EXCEPTION
+	WHEN OTHERS THEN
+		DBMS_OUTPUT.PUT_LINE('Erreur Oracle : '||sqlcode||' ; Message Oracle : '||sqlerrm);
+		IF sqlcode = -20001 THEN -- erreur formule
+		  RETURN -1;
+		ELSIF sqlcode = -20002 THEN -- erreur type
+		  RETURN -2;
+		ELSE
+		  RETURN -10;
+		END IF;
+END;
+/
